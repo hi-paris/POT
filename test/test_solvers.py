@@ -8,9 +8,10 @@
 import itertools
 import numpy as np
 import pytest
+import sys
 
 import ot
-
+from ot.bregman import geomloss
 
 lst_reg = [None, 1]
 lst_reg_type = ['KL', 'entropy', 'L2']
@@ -22,6 +23,29 @@ lst_gw_losses = ['L2', 'KL']
 lst_unbalanced_type_gromov = ['KL', 'semirelaxed', 'partial']
 lst_unbalanced_gromov = [None, 0.9]
 lst_alpha = [0, 0.4, 0.9, 1]
+
+lst_method_params_solve_sample = [
+    {'method': '1d'},
+    {'method': '1d', 'metric': 'euclidean'},
+    {'method': 'gaussian'},
+    {'method': 'gaussian', 'reg': 1},
+    {'method': 'factored', 'rank': 10},
+    {'method': 'lowrank', 'reg': 0.1}
+]
+
+lst_parameters_solve_sample_NotImplemented = [
+    {'method': '1d', 'metric': 'any other one'},  # fail 1d on weird metrics
+    {'method': 'gaussian', 'metric': 'euclidean'},  # fail gaussian on metric not euclidean
+    {'method': 'factored', 'metric': 'euclidean'},  # fail factored on metric not euclidean
+    {"method": 'lowrank', 'metric': 'euclidean'},  # fail lowrank on metric not euclidean
+    {'lazy': True},  # fail lazy for non regularized
+    {'lazy': True, 'unbalanced': 1},  # fail lazy for non regularized unbalanced
+    {'lazy': True, 'reg': 1, 'unbalanced': 1},  # fail lazy for unbalanced and regularized
+]
+
+# set readable ids for each param
+lst_method_params_solve_sample = [pytest.param(param, id=str(param)) for param in lst_method_params_solve_sample]
+lst_parameters_solve_sample_NotImplemented = [pytest.param(param, id=str(param)) for param in lst_parameters_solve_sample_NotImplemented]
 
 
 def assert_allclose_sol(sol1, sol2):
@@ -257,38 +281,22 @@ def test_solve_gromov_not_implemented(nx):
         ot.solve_gromov(Ca, Cb, reg=1, unbalanced_type='partial', unbalanced=0.5, symmetric=False)
 
 
-
-
-###########################################################################################################
-############################################ WORK IN PROGRESS #############################################
-###########################################################################################################
-
-def assert_allclose_sol_sample(sol1, sol2):
-    # test attributes of OTResultLazy class
-    lst_attr = ['potentials','potential_a', 'potential_b', 'lazy_plan']
-
-    nx1 = sol1._backend if sol1._backend is not None else ot.backend.NumpyBackend()
-    nx2 = sol2._backend if sol2._backend is not None else ot.backend.NumpyBackend()
-
-    for attr in lst_attr:
-        try:
-            np.allclose(nx1.to_numpy(getattr(sol1, attr)), nx2.to_numpy(getattr(sol2, attr)))
-        except NotImplementedError:
-            pass
-
-
-@pytest.mark.parametrize("reg,reg_type,unbalanced,unbalanced_type", itertools.product(lst_reg, lst_reg_type, lst_unbalanced, lst_unbalanced_type))
 def test_solve_sample(nx):
     # test solve_sample when is_Lazy = False
-    n = 100
+    n = 20
     X_s = np.reshape(1.0 * np.arange(n), (n, 1))
     X_t = np.reshape(1.0 * np.arange(0, n), (n, 1))
 
     a = ot.utils.unif(X_s.shape[0])
     b = ot.utils.unif(X_t.shape[0])
 
+    M = ot.dist(X_s, X_t)
+
+    # solve with ot.solve
+    sol00 = ot.solve(M, a, b)
+
     # solve unif weights
-    sol0 = ot.solve_sample(X_s, X_t) 
+    sol0 = ot.solve_sample(X_s, X_t)
 
     # solve signe weights
     sol = ot.solve_sample(X_s, X_t, a, b)
@@ -300,6 +308,7 @@ def test_solve_sample(nx):
     sol.status
 
     assert_allclose_sol(sol0, sol)
+    assert_allclose_sol(sol0, sol00)
 
     # solve in backend
     X_sb, X_tb, ab, bb = nx.from_numpy(X_s, X_t, a, b)
@@ -316,42 +325,114 @@ def test_solve_sample(nx):
         sol0 = ot.solve_sample(X_s, X_t, reg=1, reg_type='cryptic divergence')
 
 
-
-def test_lazy_solve_sample(nx):
-    # test solve_sample when is_Lazy = True
-    n = 100
+def test_solve_sample_lazy(nx):
+    # test solve_sample when is_Lazy = False
+    n = 20
     X_s = np.reshape(1.0 * np.arange(n), (n, 1))
     X_t = np.reshape(1.0 * np.arange(0, n), (n, 1))
 
     a = ot.utils.unif(X_s.shape[0])
     b = ot.utils.unif(X_t.shape[0])
 
-    # solve unif weights
-    sol0 = ot.solve_sample(X_s, X_t, reg=0.1, is_Lazy=True) # reg != 0 or None since no implementation yet for is_Lazy=True
+    X_s, X_t, a, b = nx.from_numpy(X_s, X_t, a, b)
+
+    M = ot.dist(X_s, X_t)
+
+    # solve with ot.solve
+    sol00 = ot.solve(M, a, b, reg=1)
+
+    sol0 = ot.solve_sample(X_s, X_t, a, b, reg=1)
 
     # solve signe weights
-    sol = ot.solve_sample(X_s, X_t, a, b, reg=0.1, is_Lazy=True)
+    sol = ot.solve_sample(X_s, X_t, a, b, reg=1, lazy=True)
 
-    # check some attributes
-    sol.potentials
-    sol.lazy_plan
+    assert_allclose_sol(sol0, sol00)
 
-    assert_allclose_sol_sample(sol0, sol)
+    np.testing.assert_allclose(sol0.plan, sol.lazy_plan[:], rtol=1e-5, atol=1e-5)
 
-    # solve in backend
-    X_sb, X_tb, ab, bb = nx.from_numpy(X_s, X_t, a, b)
-    solb = ot.solve_sample(X_sb, X_tb, ab, bb, reg=0.1, is_Lazy=True)
 
-    assert_allclose_sol_sample(sol, solb)
+@pytest.mark.skipif(sys.version_info < (3, 10), reason="requires python3.10 or higher")
+@pytest.mark.skipif(not geomloss, reason="pytorch not installed")
+@pytest.skip_backend('tf')
+@pytest.skip_backend("cupy")
+@pytest.skip_backend("jax")
+@pytest.mark.parametrize("metric", ["sqeuclidean", "euclidean"])
+def test_solve_sample_geomloss(nx, metric):
+    # test solve_sample when is_Lazy = False
+    n_samples_s = 13
+    n_samples_t = 7
+    n_features = 2
+    rng = np.random.RandomState(0)
 
-    # test not implemented reg==0 (or None) + balanced and check raise
+    x = rng.randn(n_samples_s, n_features)
+    y = rng.randn(n_samples_t, n_features)
+    a = ot.utils.unif(n_samples_s)
+    b = ot.utils.unif(n_samples_t)
+
+    xb, yb, ab, bb = nx.from_numpy(x, y, a, b)
+
+    sol0 = ot.solve_sample(xb, yb, ab, bb, reg=1)
+
+    # solve signe weights
+    sol = ot.solve_sample(xb, yb, ab, bb, reg=1, method='geomloss')
+    assert_allclose_sol(sol0, sol)
+
+    sol1 = ot.solve_sample(xb, yb, ab, bb, reg=1, lazy=False, method='geomloss')
+    assert_allclose_sol(sol0, sol)
+
+    sol1 = ot.solve_sample(xb, yb, ab, bb, reg=1, lazy=True, method='geomloss_tensorized')
+    np.testing.assert_allclose(nx.to_numpy(sol1.lazy_plan[:]), nx.to_numpy(sol.lazy_plan[:]), rtol=1e-5, atol=1e-5)
+
+    sol1 = ot.solve_sample(xb, yb, ab, bb, reg=1, lazy=True, method='geomloss_online')
+    np.testing.assert_allclose(nx.to_numpy(sol1.lazy_plan[:]), nx.to_numpy(sol.lazy_plan[:]), rtol=1e-5, atol=1e-5)
+
+    sol1 = ot.solve_sample(xb, yb, ab, bb, reg=1, lazy=True, method='geomloss_multiscale')
+    np.testing.assert_allclose(nx.to_numpy(sol1.lazy_plan[:]), nx.to_numpy(sol.lazy_plan[:]), rtol=1e-5, atol=1e-5)
+
+    sol1 = ot.solve_sample(xb, yb, ab, bb, reg=1, lazy=True, method='geomloss')
+    np.testing.assert_allclose(nx.to_numpy(sol1.lazy_plan[:]), nx.to_numpy(sol.lazy_plan[:]), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("method_params", lst_method_params_solve_sample)
+def test_solve_sample_methods(nx, method_params):
+
+    n_samples_s = 20
+    n_samples_t = 7
+    n_features = 2
+    rng = np.random.RandomState(0)
+
+    x = rng.randn(n_samples_s, n_features)
+    y = rng.randn(n_samples_t, n_features)
+    a = ot.utils.unif(n_samples_s)
+    b = ot.utils.unif(n_samples_t)
+
+    xb, yb, ab, bb = nx.from_numpy(x, y, a, b)
+
+    sol = ot.solve_sample(x, y, **method_params)
+    solb = ot.solve_sample(xb, yb, ab, bb, **method_params)
+
+    # check some attributes (no need )
+    assert_allclose_sol(sol, solb)
+
+    sol2 = ot.solve_sample(x, x, **method_params)
+    if method_params['method'] not in ['factored', 'lowrank']:
+        np.testing.assert_allclose(sol2.value, 0)
+
+
+@pytest.mark.parametrize("method_params", lst_parameters_solve_sample_NotImplemented)
+def test_solve_sample_NotImplemented(nx, method_params):
+
+    n_samples_s = 20
+    n_samples_t = 7
+    n_features = 2
+    rng = np.random.RandomState(0)
+
+    x = rng.randn(n_samples_s, n_features)
+    y = rng.randn(n_samples_t, n_features)
+    a = ot.utils.unif(n_samples_s)
+    b = ot.utils.unif(n_samples_t)
+
+    xb, yb, ab, bb = nx.from_numpy(x, y, a, b)
+
     with pytest.raises(NotImplementedError):
-        sol0 = ot.solve_sample(X_s, X_t, is_Lazy=True) # reg == 0 (or None) + unbalanced= None are default  
-
-    # test not implemented reg==0 (or None) + unbalanced_type and check raise
-    with pytest.raises(NotImplementedError):
-        sol0 = ot.solve_sample(X_s, X_t, unbalanced_type="kl", is_Lazy=True) # reg == 0 (or None) is default 
-    
-    # test not implemented reg != 0 + unbalanced_type and check raise
-    with pytest.raises(NotImplementedError):
-        sol0 = ot.solve_sample(X_s, X_t, reg=0.1, unbalanced_type="kl", is_Lazy=True) 
+        ot.solve_sample(xb, yb, ab, bb, **method_params)

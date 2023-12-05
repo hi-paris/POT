@@ -527,7 +527,7 @@ def reduce_lazytensor(a, func, axis=None, nx=None, batch_size=100):
     """
 
     if nx is None:
-        nx = get_backend(a[0])
+        nx = get_backend(a[0:1])
 
     if axis is None:
         res = 0.0
@@ -1112,6 +1112,14 @@ class OTResult:
         """Optimization status of the solver."""
         if self._status is not None:
             return self._status
+        else:
+            raise NotImplementedError()
+
+    @property
+    def log(self):
+        """Dictionary containing potential information about the solver."""
+        if self._log is not None:
+            return self._log
         else:
             raise NotImplementedError()
 

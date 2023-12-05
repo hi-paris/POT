@@ -1,69 +1,76 @@
-#####################################################################################################
-####################################### WORK IN PROGRESS ############################################
-#####################################################################################################
-
-
 """ Test for low rank sinkhorn solvers """
+
+# Author: Laurène DAVID <laurene.david@ip-paris.fr>
+#
+# License: MIT License
 
 import ot
 import numpy as np
 import pytest
-from itertools import product
 
 
-def test_LR_Dykstra():
-    # test for LR_Dykstra algorithm ? catch nan values ?
-    pass
+def test_compute_lr_sqeuclidean_matrix():
+    # test computation of low rank cost matrices M1 and M2
+    n = 100
+    X_s = np.reshape(1.0 * np.arange(2 * n), (n, 2))
+    X_t = np.reshape(1.0 * np.arange(2 * n), (n, 2))
+
+    M1, M2 = ot.lowrank.compute_lr_sqeuclidean_matrix(X_s, X_t)
+    M = ot.dist(X_s, X_t, metric="sqeuclidean")  # original cost matrix
+
+    np.testing.assert_allclose(np.dot(M1, M2.T), M, atol=1e-05)
 
 
-@pytest.mark.parametrize("verbose, warn", product([True, False], [True, False]))
-def test_lowrank_sinkhorn(verbose, warn):
+def test_lowrank_sinkhorn():
     # test low rank sinkhorn
     n = 100
     a = ot.unif(n)
     b = ot.unif(n)
 
     X_s = np.reshape(1.0 * np.arange(n), (n, 1))
-    X_t = np.reshape(1.0 * np.arange(0, n), (n, 1))
+    X_t = np.reshape(1.0 * np.arange(n), (n, 1))
 
-    Q_sqe, R_sqe, g_sqe = ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, 0.1)
-    P_sqe = np.dot(Q_sqe,np.dot(np.diag(1/g_sqe),R_sqe.T))
+    Q, R, g, log = ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, reg=0.1, log=True)
+    P = log["lazy_plan"][:]
+    value_linear = log["value_linear"]
 
-    Q_m, R_m, g_m = ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, 0.1, metric='euclidean')
-    P_m = np.dot(Q_m,np.dot(np.diag(1/g_m),R_m.T))
+    # check constraints for P
+    np.testing.assert_allclose(a, P.sum(1), atol=1e-05)
+    np.testing.assert_allclose(b, P.sum(0), atol=1e-05)
 
-    # check constraints
-    np.testing.assert_allclose(
-        a, P_sqe.sum(1), atol=1e-05) # metric sqeuclidian
-    np.testing.assert_allclose(
-        b, P_sqe.sum(0), atol=1e-05) # metric sqeuclidian
-    np.testing.assert_allclose(
-        a, P_m.sum(1), atol=1e-05) # metric euclidian
-    np.testing.assert_allclose(
-        b, P_m.sum(0), atol=1e-05) # metric euclidian
-    
+    # check if lazy_plan is equal to the fully computed plan
+    P_true = np.dot(Q, np.dot(np.diag(1 / g), R.T))
+    np.testing.assert_allclose(P, P_true, atol=1e-05)
+
+    # check if value_linear is correct with its original formula
+    M = ot.dist(X_s, X_t, metric="sqeuclidean")
+    value_linear_true = np.sum(M * P_true)
+    np.testing.assert_allclose(value_linear, value_linear_true, atol=1e-05)
+
+    # check warn parameter when Dykstra algorithm doesn't converge
     with pytest.warns(UserWarning):
-        ot.lowrank.lowrank_sinkhorn(X_s, X_t, 0.1, a, b, stopThr=0, numItermax=1)
+        ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, reg=0.1, stopThr=0, numItermax=1)
 
 
-
-@pytest.mark.parametrize(("alpha, rank"),((0.8,2),(0.5,3),(0.2,4))) 
-def test_lowrank_sinkhorn_alpha_warning(alpha,rank):
-    # test warning for value of alpha 
+@pytest.mark.parametrize(("alpha, rank"), ((0.8, 2), (0.5, 3), (0.2, 6)))
+def test_lowrank_sinkhorn_alpha_error(alpha, rank):
+    # Test warning for value of alpha
     n = 100
     a = ot.unif(n)
     b = ot.unif(n)
 
     X_s = np.reshape(1.0 * np.arange(n), (n, 1))
     X_t = np.reshape(1.0 * np.arange(0, n), (n, 1))
-    
-    with pytest.warns(UserWarning):
-        ot.lowrank.lowrank_sinkhorn(X_s, X_t, 0.1, a, b, r=rank, alpha=alpha, warn=False)
-    
+
+    with pytest.raises(ValueError):
+        ot.lowrank.lowrank_sinkhorn(
+            X_s, X_t, a, b, reg=0.1, rank=rank, alpha=alpha, warn=False
+        )
 
 
+@pytest.skip_backend('tf')
 def test_lowrank_sinkhorn_backends(nx):
-    # test low rank sinkhorn for different backends
+    # Test low rank sinkhorn for different backends
     n = 100
     a = ot.unif(n)
     b = ot.unif(n)
@@ -73,12 +80,9 @@ def test_lowrank_sinkhorn_backends(nx):
 
     ab, bb, X_sb, X_tb = nx.from_numpy(a, b, X_s, X_t)
 
-    Q, R, g = nx.to_numpy(ot.lowrank.lowrank_sinkhorn(X_sb, X_tb, ab, bb, 0.1))
-    P = np.dot(Q,np.dot(np.diag(1/g),R.T))
+    Q, R, g, log = ot.lowrank.lowrank_sinkhorn(X_sb, X_tb, ab, bb, reg=0.1, log=True)
+    lazy_plan = log["lazy_plan"]
+    P = lazy_plan[:]
 
-    np.testing.assert_allclose(a, P.sum(1), atol=1e-05) 
-    np.testing.assert_allclose(b, P.sum(0), atol=1e-05)
-
-
-
-
+    np.testing.assert_allclose(ab, P.sum(1), atol=1e-05)
+    np.testing.assert_allclose(bb, P.sum(0), atol=1e-05)
