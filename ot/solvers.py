@@ -18,13 +18,14 @@ from .gromov import (gromov_wasserstein2, fused_gromov_wasserstein2,
                      entropic_gromov_wasserstein2, entropic_fused_gromov_wasserstein2,
                      semirelaxed_gromov_wasserstein2, semirelaxed_fused_gromov_wasserstein2,
                      entropic_semirelaxed_fused_gromov_wasserstein2,
-                     entropic_semirelaxed_gromov_wasserstein2)
+                     entropic_semirelaxed_gromov_wasserstein2, 
+                     quantized_gromov_wasserstein)
 from .partial import partial_gromov_wasserstein2, entropic_partial_gromov_wasserstein2
 from .gaussian import empirical_bures_wasserstein_distance
 from .factored import factored_optimal_transport
-from .lowrank import lowrank_sinkhorn
+from .lowrank import lowrank_sinkhorn, lowrank_gromov_wasserstein
 
-lst_method_lazy = ['1d', 'gaussian', 'lowrank', 'factored', 'geomloss', 'geomloss_auto', 'geomloss_tensorized', 'geomloss_online', 'geomloss_multiscale']
+lst_method_lazy = ['1d', 'gaussian', 'lowrank', 'factored', 'geomloss', 'geomloss_auto', 'geomloss_tensorized', 'geomloss_online', 'geomloss_multiscale', 'quantized']
 
 
 def solve(M, a=None, b=None, reg=None, reg_type="KL", unbalanced=None,
@@ -1366,3 +1367,169 @@ def solve_sample(X_a, X_b, a=None, b=None, metric='sqeuclidean', reg=None, reg_t
         res = OTResult(potentials=potentials, value=value, lazy_plan=lazy_plan,
                        value_linear=value_linear, plan=plan, status=status, backend=nx, log=log)
         return res
+
+
+def solve_gromov_sample(X_a, X_b, M=None, a=None, b=None, metric='sqeuclidean', loss='L2', symmetric=None, alpha=0.5, reg=None, 
+                        reg_type="KL", unbalanced=None, unbalanced_type='KL', n_threads=1, lazy=False, method=None, max_iter=None, 
+                        plan_init=None, rank=100, part_method='random', tol=None, verbose=False):
+    
+    r"""Solve the discrete Gromov-Wasserstein problem using the samples in the source and target domains.
+
+    Parameters
+    ----------
+    X_s : array-like, shape (n_samples_a, dim)
+        samples in the source domain
+    X_t : array-like, shape (n_samples_b, dim)
+        samples in the target domain
+    M : array_like, shape (dim_a, dim_b), optional
+        Linear cost matrix for Fused Gromov-Wasserstein (default is None). 
+    a : array-like, shape (dim_a,), optional
+        Samples weights in the source domain (default is uniform)
+    b : array-like, shape (dim_b,), optional
+        Samples weights in the source domain (default is uniform)
+    loss : str, optional
+        Type of loss function, either ``"L2"`` or ``"KL"``, by default ``"L2"``
+    symmetric : bool, optional
+        Use symmetric version of the Gromov-Wasserstein problem, by default None
+        tests whether the matrices are symmetric or True/False to avoid the test.
+    reg : float, optional
+        Regularization weight :math:`\lambda_r`, by default None (no reg., exact
+        OT)
+    reg_type : str, optional
+        Type of regularization :math:`R`  either "KL", "L2", "entropy", by default "KL"
+    alpha : float, optional
+        Weight the quadratic term (alpha*Gromov) and the linear term
+        ((1-alpha)*Wass) in the Fused Gromov-Wasserstein problem. Not used for
+        Gromov problem (when M is not provided). By default ``alpha=None``
+        corresponds to ``alpha=1`` for Gromov problem (``M==None``) and
+        ``alpha=0.5`` for Fused Gromov-Wasserstein problem (``M!=None``)
+    unbalanced : float, optional
+        Unbalanced penalization weight :math:`\lambda_u`, by default None
+        (balanced OT), Not implemented yet.
+    unbalanced_type : str, optional
+        Type of unbalanced penalization function :math:`U` either "KL", "semirelaxed",
+        "partial", by default "KL" but note that it is not implemented yet.
+    n_threads : int, optional
+        Number of OMP threads for exact OT solver, by default 1
+    lazy : bool, optional
+        Return :any:`OTResultlazy` object to reduce memory cost when True, by
+        default False
+    method : str, optional
+        Method for solving the problem, this can be used to select the solver
+        for unbalanced problems (see :any:`ot.solve`), or to select a specific
+        large scale solver.
+    max_iter : int, optional
+        Maximum number of iteration, by default None (default values in each solvers)
+    plan_init : array_like, shape (dim_a, dim_b), optional
+        Initialization of the OT plan for iterative methods, by default None
+    rank : int, optional
+        Rank of the OT matrix for lazy solvers (method='lowrank'), by default 100
+    part_method : str, optional. Default is 'random'.
+        Partitioning algorithm to use (method='quantizied') among {'random', 'louvain', 
+        'fluid', 'spectral', 'kmeans'}.
+    tol : _type_, optional
+        Tolerance for solution precision, by default None (default values in each solvers)
+    verbose : bool, optional
+        Print information in the solver, by default False
+
+    Returns
+    -------
+
+    res : OTResult()
+        Result of the optimization problem. The information can be obtained as follows:
+
+        - res.plan : OT plan :math:`\mathbf{T}`
+        - res.potentials : OT dual potentials
+        - res.value : Optimal value of the optimization problem
+        - res.value_linear : Linear OT loss with the optimal OT plan
+        - res.lazy_plan : Lazy OT plan (when ``lazy=True`` or lazy method)
+
+        See :any:`OTResult` for more information.
+    
+    
+    .. _references-solve-gromov-sample:
+    References
+    ----------
+
+    .. Chowdhury, S., Miller, D., & Needham, T. (2021).
+        Quantized gromov-wasserstein. ECML PKDD 2021. Springer International Publishing.
+
+    .. Scetbon, M., Peyré, G. & Cuturi, M. (2022).
+        Linear-Time GromovWasserstein Distances using Low Rank Couplings and Costs.
+        In International Conference on Machine Learning (ICML), 2022.
+    """
+    
+    if method is not None and method.lower() in lst_method_lazy:
+        lazy0 = lazy
+        lazy = True
+
+    if not lazy:  # default non lazy solver calls ot.solve_gromov
+
+        Ca = dist(X_a, X_a, metric)
+        Cb = dist(X_b, X_b, metric)
+
+        res = solve_gromov(Ca, Cb, M, a, b, loss, symmetric, alpha, reg, reg_type, unbalanced, unbalanced_type, n_threads, method, max_iter, plan_init, tol, verbose)
+
+        return res
+
+    else:
+
+        # Detect backend
+        nx = get_backend(X_a, X_b, a, b)
+
+        potentials = None
+        value = None
+        value_linear = None
+        value_quad = None
+        plan = None
+        status = None
+        log = None
+
+        method = method.lower() if method is not None else ''
+
+        if method == 'lowrank':
+            if max_iter is None:
+                max_iter = 1000
+            if tol is None:
+                tol = 1e-4
+            if reg is None:
+                reg = 0
+
+            Q, R, g, log = lowrank_gromov_wasserstein(X_a, X_b, a, b, reg, rank, numItermax=max_iter, stopThr=tol, log=True)
+            value = log['value']
+            value_quad = log['value_quad']
+            lazy_plan = log['lazy_plan']
+            if not lazy0:  # store plan if not lazy
+                plan = lazy_plan[:]
+
+        elif method == 'quantized':
+            if max_iter is None:
+                max_iter = 10000
+            if tol is None:
+                tol = 1e-9
+                
+            npart1 = 10
+            npart2 = 10
+
+            quantized_gromov_wasserstein(X_a, X_b, npart1, npart2, a, b, part_method=part_method, verbose=verbose, log=log, 
+                                         max_iter=max_iter, tol_abs=tol)
+
+        elif reg is None or reg == 0:  # exact OT
+
+            if unbalanced is None:  # balanced EMD solver not available for lazy
+                raise (NotImplementedError('Exact OT solver with lazy=True not implemented'))
+
+            else:
+                raise (NotImplementedError('Non regularized solver with unbalanced_type="{}" not implemented'.format(unbalanced_type)))
+
+        else:
+            if unbalanced is None:
+                raise (NotImplementedError('Not implemented balanced with regularization'.format(unbalanced_type)))
+            else:
+                raise (NotImplementedError('Not implemented unbalanced_type="{}" with regularization'.format(unbalanced_type)))
+
+    
+    res = OTResult(potentials=potentials, value=value, lazy_plan=lazy_plan,
+                   value_linear=value_linear, value_quad=value_quad, plan=plan, status=status, backend=nx, log=log)
+    
+    return res
