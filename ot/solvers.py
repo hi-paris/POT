@@ -1473,7 +1473,6 @@ def solve_gromov_sample(X_a, X_b, M=None, a=None, b=None, metric='sqeuclidean', 
         return res
 
     else:
-
         # Detect backend
         nx = get_backend(X_a, X_b, a, b)
 
@@ -1507,12 +1506,15 @@ def solve_gromov_sample(X_a, X_b, M=None, a=None, b=None, metric='sqeuclidean', 
                 max_iter = 10000
             if tol is None:
                 tol = 1e-9
-                
-            npart1 = 10
-            npart2 = 10
 
-            quantized_gromov_wasserstein(X_a, X_b, npart1, npart2, a, b, part_method=part_method, verbose=verbose, log=log, 
-                                         max_iter=max_iter, tol_abs=tol)
+            npart1 = 10 # don't know default values for both 
+            npart2 = 10
+            
+            # not sure if part_method is essential as a param
+            T_global, Ts_local, T, log = quantized_gromov_wasserstein(X_a, X_b, npart1, npart2, a, b, part_method=part_method, 
+                                                                      verbose=verbose, log=log, max_iter=max_iter, tol_abs=tol) 
+            if not lazy0:  # store plan if not lazy
+                plan = T
 
         elif reg is None or reg == 0:  # exact OT
 
