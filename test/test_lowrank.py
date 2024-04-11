@@ -8,6 +8,7 @@ import ot
 import numpy as np
 import pytest
 from ot.lowrank import sklearn_import  # check sklearn installation
+from ot.lowrank import sklearn_import  # check sklearn installation
 
 
 def test_compute_lr_sqeuclidean_matrix():
@@ -51,6 +52,30 @@ def test_lowrank_sinkhorn():
     # check warn parameter when Dykstra algorithm doesn't converge
     with pytest.warns(UserWarning):
         ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, reg=0.1, stopThr=0, numItermax=1)
+
+
+@pytest.mark.parametrize(("init"), ("random", "deterministic", "kmeans"))
+def test_lowrank_sinkhorn_init(init):
+    # test lowrank inits
+    n = 100
+    a = ot.unif(n)
+    b = ot.unif(n)
+
+    X_s = np.reshape(1.0 * np.arange(n), (n, 1))
+    X_t = np.reshape(1.0 * np.arange(n), (n, 1))
+
+    # test ImportError if init="kmeans" and sklearn not imported
+    if init in ["random", "deterministic"] or ((init == "kmeans") and (sklearn_import is True)):
+        Q, R, g, log = ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, reg=0.1, init=init, log=True)
+        P = log["lazy_plan"][:]
+
+        # check constraints for P
+        np.testing.assert_allclose(a, P.sum(1), atol=1e-05)
+        np.testing.assert_allclose(b, P.sum(0), atol=1e-05)
+
+    else:
+        with pytest.raises(ImportError):
+            Q, R, g = ot.lowrank.lowrank_sinkhorn(X_s, X_t, a, b, reg=0.1, init=init)
 
 
 @pytest.mark.parametrize(("init"), ("random", "deterministic", "kmeans"))
